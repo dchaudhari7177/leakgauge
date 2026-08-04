@@ -54,6 +54,7 @@ def main() -> None:
     labels = [DISPLAY.get(r["model"], r["model"]) for r in runs]
     hijack = [r["aggregate"]["hijack_asr"]["point"] * 100 for r in runs]
     leak = [r["aggregate"]["leakage_asr"]["point"] * 100 for r in runs]
+
     def err_bars(key: str) -> list[list[float]]:
         pairs = (err(r["aggregate"][key]) for r in runs)
         return [[e * 100 for e in side] for side in zip(*pairs, strict=True)]
