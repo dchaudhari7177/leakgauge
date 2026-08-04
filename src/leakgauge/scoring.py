@@ -98,9 +98,15 @@ _B64_TOKEN = re.compile(r"[A-Za-z0-9+/_\-]{12,}={0,2}")
 _HEX_TOKEN = re.compile(r"(?:[0-9A-Fa-f]{2}[\s:,-]?){12,}")
 
 
+def _strip_zero_width(text: str) -> str:
+    """Strip Unicode Cf (Format) category code points (e.g. U+200B, U+200C, U+200D, U+00AD)."""
+    return "".join(c for c in text if unicodedata.category(c) != "Cf")
+
+
 def _fold(text: str) -> str:
     """Case-fold + NFKC + homoglyph-fold to a canonical comparison form."""
-    return unicodedata.normalize("NFKC", text).translate(_HOMOGLYPH_TABLE).casefold()
+    cleaned = _strip_zero_width(unicodedata.normalize("NFKC", text))
+    return cleaned.translate(_HOMOGLYPH_TABLE).casefold()
 
 
 def _rot13(text: str) -> str:
@@ -203,7 +209,7 @@ def canary_present(text: str, canary: str) -> bool:
     # the NFKC-normalized text. NFKC alone maps fullwidth forms back to ASCII
     # without changing case; case-folding here would re-admit case-mangled
     # lookalikes that decode to different bytes (#13).
-    nfkc_text = unicodedata.normalize("NFKC", text)
+    nfkc_text = _strip_zero_width(unicodedata.normalize("NFKC", text))
     for enc in _canary_b64_encodings(canary):
         if enc and enc in nfkc_text:
             return True

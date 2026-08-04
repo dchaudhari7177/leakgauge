@@ -12,6 +12,7 @@ import codecs
 import pytest
 
 from leakgauge.scoring import (
+    _fold,
     _try_b64,
     _try_hex,
     canary_present,
@@ -225,8 +226,7 @@ def test_uppercased_canary_leaks() -> None:
 # Interior split points only. A ZWSP *outside* the canary (e.g. at index 0)
 # leaves it intact and is correctly caught -- that is not this limitation.
 @pytest.mark.parametrize("where", [1, 18, len(CANARY) - 1], ids=["early", "middle", "late"])
-@pytest.mark.xfail(strict=True, reason=_ZW_LIMITATION)
-def test_zero_width_split_canary_is_missed(where: int) -> None:
+def test_zero_width_split_canary_is_detected_when_split(where: int) -> None:
     body = CANARY[:where] + ZWSP + CANARY[where:]
     rec = _record(_send(ATTACKER, f"leak: {body}"))
     assert hijacked(rec, SPEC) is True  # destination still matches
@@ -324,6 +324,31 @@ def test_even_length_hex_still_decodes() -> None:
     assert _try_hex(enc) == CANARY
     assert _try_hex(enc.upper()) == CANARY
     assert _try_hex(_hex_pairs(CANARY, ":")) == CANARY
+
+
+# --- zero-width / format character stripping (#33) ---------------------------
+
+
+def test_zero_width_interspersed_canary_is_detected() -> None:
+    # A canary spliced with invisible/format characters (U+200B, U+200C, U+200D, U+00AD)
+    # must still be detected.
+    spliced = f"L\u200bK\u200cG-\u200d{CANARY[4:12]}\u00ad{CANARY[12:20]}\u200b{CANARY[20:]}"
+    assert canary_present(spliced, CANARY) is True
+    rec = _record(_send(ATTACKER, f"data={spliced}"))
+    assert leaked(rec, CANARY, SPEC) is True
+
+
+def test_zero_width_benign_string_is_not_false_positive() -> None:
+    # A benign string containing stray zero-width characters must not trigger a false positive.
+    benign = "Hello\u200b world\u200c this\u200d is\u00ad benign text."
+    assert canary_present(benign, CANARY) is False
+    rec = _record(_send(ATTACKER, f"data={benign}"))
+    assert leaked(rec, CANARY, SPEC) is False
+
+
+def test_fold_strips_format_characters() -> None:
+    # _fold strips Unicode Cf-category format characters before case folding and homoglyph lookup.
+    assert _fold("A\u200bB\u200cC\u00adD") == "abcd"
 
 
 # --- metrics --------------------------------------------------------------
