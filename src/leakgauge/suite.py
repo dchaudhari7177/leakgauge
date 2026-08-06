@@ -13,9 +13,11 @@ there is a single source of truth for both the runner and the CLI.
 from __future__ import annotations
 
 import json
+import platform
 import statistics
 import time
 from collections.abc import Callable, Iterable
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +36,35 @@ from leakgauge.runner import DEFAULT_MAX_STEPS, run_case
 from leakgauge.scoring import ModelReport, RankReorder, RateCI, _rank_reorder, compute_report
 from leakgauge.types import Case, ModelAdapter, Response, RunRecord
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2 adds the "provenance" block; every v1 key is unchanged
 # k=1 is a coin flip on stochastic models (two identical pilots gave 0/9 vs 1/9),
 # so the seeded default is 5. Adopted as policy in Phase 3.
 DEFAULT_K = 5
 RESULTS_DIR = Path("results")
+
+# Bootstrap resamples for the aggregate CIs. Named here so the value that
+# actually shaped an interval can be recorded in the summary's provenance
+# rather than being an invisible default.
+DEFAULT_BOOTSTRAP_ITERS = 10_000
+
+
+def runtime_tag() -> str:
+    """Coarse platform + interpreter tag for results provenance.
+
+    Deliberately coarse: OS, machine architecture and Python version. No
+    hostname, no user, no CPU model — a results file is committed to the repo,
+    so it must not carry anything identifying about who ran it.
+    """
+    return f"{platform.system()} {platform.machine()} python-{platform.python_version()}"
+
+
+def _package_version() -> str:
+    """Installed leakgauge version, or "unknown" when running from a bare tree."""
+    try:
+        return metadata.version("leakgauge")
+    except metadata.PackageNotFoundError:  # pragma: no cover - editable/no-dist tree
+        return "unknown"
+
 
 # --- case registry -----------------------------------------------------------
 # Local to the suite runner (cases.py is owned by the cases workstream). Group
@@ -233,7 +259,7 @@ def build_summary(
     suite: str,
     seeds: list[int],
     wall_clock_s: float,
-    bootstrap_iters: int = 10_000,
+    bootstrap_iters: int = DEFAULT_BOOTSTRAP_ITERS,
 ) -> dict[str, Any]:
     """Aggregate records into the tracked summary dict."""
     report = compute_report(
@@ -277,6 +303,21 @@ def build_summary(
         "k": len(seeds),
         "n_cases": model.n_cases,
         "wall_clock_s": round(wall_clock_s, 4),
+        # Every rate here is stochastic — k seeded repeats plus a bootstrap — so
+        # a results file that does not say under what conditions it was produced
+        # cannot be compared against another one, and CONTRIBUTING requires
+        # seeds, hardware and wall-clock to be stated. Collected in one block so
+        # a reader does not have to know which top-level keys happen to be
+        # provenance.
+        "provenance": {
+            "base_seed": seeds[0] if seeds else 0,
+            "k": len(seeds),
+            "seeds": seeds,
+            "bootstrap_iters": bootstrap_iters,
+            "wall_clock_s": round(wall_clock_s, 4),
+            "runtime": runtime_tag(),
+            "leakgauge_version": _package_version(),
+        },
         "aggregate": {
             "hijack_asr": _rate(model.hijack),
             "leakage_asr": _rate(model.leakage),
@@ -371,7 +412,28 @@ def format_summary_table(summary: dict[str, Any]) -> str:
         f"  spend: {_fmt_usd(cost['spend_usd'])} "
         f"({cost['tokens_in']} in / {cost['tokens_out']} out tokens){unpriced}"
     )
+    lines.append(_provenance_line(summary))
     return "\n".join(lines)
+
+
+def _provenance_line(summary: dict[str, Any]) -> str:
+    """Run conditions, printed next to the rates they produced.
+
+    Falls back to the top-level keys for a v1 summary, which has no provenance
+    block — a leaderboard should still render an older results file.
+    """
+    prov = summary.get("provenance") or {}
+    seeds = prov.get("seeds", summary.get("seeds", []))
+    base_seed = prov.get("base_seed", seeds[0] if seeds else 0)
+    k = prov.get("k", summary.get("k", 0))
+    iters = prov.get("bootstrap_iters", "?")
+    wall = prov.get("wall_clock_s", summary.get("wall_clock_s", "?"))
+    runtime = prov.get("runtime", "unrecorded")
+    version = prov.get("leakgauge_version", "unrecorded")
+    return (
+        f"  run: base_seed={base_seed} k={k} bootstrap_iters={iters} "
+        f"wall={wall}s | {runtime} | leakgauge {version}"
+    )
 
 
 def _fmt_usd(amount: float) -> str:
@@ -438,6 +500,12 @@ def format_reorder_table(summaries: list[dict[str, Any]], reorder: RankReorder |
     lines.append("")
     lines.append(f"  Kendall tau (hijack-rate vs leakage-rate): {reorder.kendall_tau:.3f}")
     lines.append("  tau<1 means ranking by leakage reorders the models — the thesis.")
+    # A reorder compares rates across files, so the conditions each was produced
+    # under belong next to it: two models run at different k are not comparable.
+    lines.append("")
+    lines.append("  run conditions per model:")
+    for summary in summaries:
+        lines.append(f"  {summary['model']:<24}{_provenance_line(summary).strip()}")
     return "\n".join(lines)
 
 

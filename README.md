@@ -62,9 +62,22 @@ uv run leakgauge --model stub:demo --suite all --k 5
     leakage-verified ASR : 1.000  [1.000, 1.000]
     utility-under-attack : 1.000  [1.000, 1.000]
   spend: $0.00 (0 in / 0 out tokens) (unpriced model — $0)
+  run: base_seed=0 k=5 bootstrap_iters=10000 wall=0.0128s | Linux x86_64 python-3.12.4 | leakgauge 0.0.1
 
   wrote results/stub_demo.json
 ```
+
+That last line is the run's **provenance**, and it is recorded in the summary
+JSON too, under `provenance`: base seed, k, the exact seed list, bootstrap
+iterations, wall-clock, a coarse platform/interpreter tag, and the leakgauge
+version. Every rate here is stochastic, so a results file without those
+conditions cannot be compared against another one. The tag is deliberately
+coarse — OS, architecture, Python version — since results files are committed.
+
+**Reproducing the numbers above** is that one command: the stub suite is fully
+deterministic, so at the same `--k` / `--seed` it reproduces the committed rates
+exactly. `tests/test_run_provenance.py` asserts that rather than only claiming
+it.
 
 The stub is a *scripted* always-hijack, always-leak agent: those `1.00`s validate that the pipeline plumbs a hit end to end, they are **not** a model result. A real model is the interesting case:
 
