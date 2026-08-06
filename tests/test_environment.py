@@ -40,6 +40,10 @@ def test_tools_and_specs_present() -> None:
         "read_event",
         "search_documents",
         "read_document",
+        # URL-shaped egress, used by the urlexfil family. It is on every case's
+        # tool surface, but counts as exfil only where a case names it in
+        # exfil_spec.external_tools — see tests/test_urlexfil_cases.py.
+        "http_post",
     }
     # canary is planted inside an env field, never in the user task
     assert _CANARY not in DELAYED_CASE.user_task

