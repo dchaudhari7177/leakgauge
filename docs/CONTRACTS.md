@@ -142,6 +142,10 @@ def get_adapter(model_id: str) -> ModelAdapter: ...   # "anthropic:foo" -> adapt
 
 ## 5. Metrics (scorer output)
 
+This section is the frozen *shape*; [METRICS.md](METRICS.md) is the glossary —
+what each number means, and a worked synthetic trace showing hijack-true /
+leak-false against hijack-true / leak-true.
+
 Computed over a list of `RunRecord` (k repeats per case, seeded):
 
 - `hijack_asr` — mean over cases of `hijacked(record)`

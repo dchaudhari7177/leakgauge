@@ -96,6 +96,8 @@ uv run leakgauge --model openai:gpt-4o --suite all --k 5
 - **Three metrics.** *hijack-ASR* (outbound call to the attacker at all), *leakage-verified ASR* (that call actually carried the canary), and *utility-under-attack* (the benign task still completed — so a model can't look robust by refusing to do anything).
 - **Attack families.** `delayed` (trigger buried mid-task), `assembly` (payload split across sources), `encoded` (instruction and/or canary wrapped to slip naive filters). All are published patterns; leakgauge contributes the scoring, not new attacks.
 
+New here? [docs/METRICS.md](docs/METRICS.md) defines every number in one page — the three rates, the hijack−leakage gap and the Kendall-τ reorder — and walks one synthetic trace through all of them, including the case that looks like exfil but is not.
+
 ---
 
 ## Status
