@@ -86,6 +86,21 @@ uv run leakgauge --model openai:gpt-4o --suite all --k 5
 --results-dir RESULTS_DIR                  where to write <model>.json
 ```
 
+Comparing a roster:
+
+```text
+leakgauge report results/*.json            print the hijack-vs-leakage rank reorder
+  --html DIR                               also render the static leaderboard
+  --summary-json PATH                      also write the roster summary as JSON
+  --summary-md PATH                        also write it as a markdown table
+```
+
+The two `--summary-*` artifacts carry, per model, the three rates with their
+bootstrap CIs, the hijack−leakage `gap`, and the rank under each ordering, plus
+the roster-level Kendall τ and how many models change rank — so a roster result
+is citable and diffable across runs. A metric a run did not measure stays
+`null` / `—`, never `0`.
+
 ---
 
 ## How it works

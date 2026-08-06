@@ -5,7 +5,8 @@ Two entry forms:
 - ``leakgauge --model stub:demo --suite all --k 3`` — run a suite offline, print
   a per-case table + aggregate CIs, and write ``results/<model>.json``.
 - ``leakgauge report results/*.json`` — load several models' summaries and print
-  the headline hijack-vs-leakage rank reorder (Kendall tau).
+  the headline hijack-vs-leakage rank reorder (Kendall tau). ``--summary-json`` /
+  ``--summary-md`` additionally write the roster summary as a diffable artifact.
 
 The stub adapter is the offline default: it scripts a hijacked agent per case so
 both ASRs register with zero API keys. Real providers plug in via the same
@@ -28,9 +29,11 @@ from leakgauge.suite import (
     case_by_id,
     cases_for_suite,
     format_reorder_table,
+    format_roster_markdown,
     format_summary_table,
     load_summaries,
     rank_reorder,
+    roster_summary,
     run_and_summarise,
     stub_script_for,
     suite_names,
@@ -167,6 +170,16 @@ def _report(argv: list[str]) -> int:
     parser.add_argument(
         "--html", metavar="DIR", help="also render a static leaderboard index.html into DIR"
     )
+    parser.add_argument(
+        "--summary-json",
+        metavar="PATH",
+        help="also write the machine-readable roster summary (rates + CIs, gap, ranks, tau)",
+    )
+    parser.add_argument(
+        "--summary-md",
+        metavar="PATH",
+        help="also write the roster summary as a committable markdown table",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -183,6 +196,20 @@ def _report(argv: list[str]) -> int:
         return 2
     reorder = rank_reorder(summaries)
     print(format_reorder_table(summaries, reorder))
+
+    if args.summary_json or args.summary_md:
+        roster = roster_summary(summaries, reorder)
+        if args.summary_json:
+            path = Path(args.summary_json)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(roster, indent=2) + "\n", encoding="utf-8")
+            print(f"\n  wrote {path}")
+        if args.summary_md:
+            path = Path(args.summary_md)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(format_roster_markdown(roster) + "\n", encoding="utf-8")
+            print(f"\n  wrote {path}")
+
     if args.html:
         from leakgauge.leaderboard import write_site
 

@@ -347,6 +347,13 @@ class RankReorder:
     kendall_tau: float
 
 
+def crossings(reorder: RankReorder) -> int:
+    """How many models sit at a different rank under leakage than under hijack."""
+    return sum(
+        1 for m in reorder.models_by_hijack if reorder.hijack_ranks[m] != reorder.leakage_ranks[m]
+    )
+
+
 @dataclass(frozen=True)
 class Report:
     per_model: list[ModelReport]

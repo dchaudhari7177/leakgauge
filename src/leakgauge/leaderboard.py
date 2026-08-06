@@ -17,7 +17,7 @@ import html
 from pathlib import Path
 from typing import Any
 
-from leakgauge.scoring import RankReorder
+from leakgauge.scoring import RankReorder, crossings
 
 # Distinct, print-safe line colours assigned to models in a stable order.
 _PALETTE = ["#2563eb", "#d97706", "#059669", "#db2777", "#7c3aed", "#0891b2", "#65a30d", "#dc2626"]
@@ -39,13 +39,6 @@ def _pct(x: float) -> str:
     return f"{round(x * 100)}%"
 
 
-def _crossings(reorder: RankReorder) -> int:
-    """How many models sit at a different rank under leakage than under hijack."""
-    return sum(
-        1 for m in reorder.models_by_hijack if reorder.hijack_ranks[m] != reorder.leakage_ranks[m]
-    )
-
-
 # --- headline figure: rank-reorder slopegraph (inline SVG) -------------------
 
 
@@ -55,7 +48,7 @@ def _svg_reorder(reorder: RankReorder, rate_by_model: dict[str, tuple[float, flo
     scored on verified leakage. Built to read without a caption."""
     models = reorder.models_by_hijack
     n = len(models)
-    moved_n = _crossings(reorder)
+    moved_n = crossings(reorder)
     left_x, right_x, top, row = 250, 590, 108, 62
     width, height = 840, top + (n - 1) * row + 96
     colour = {m: _PALETTE[i % len(_PALETTE)] for i, m in enumerate(sorted(models))}

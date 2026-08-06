@@ -31,7 +31,14 @@ from leakgauge.cases import (
 )
 from leakgauge.pricing import cost_usd, price_for
 from leakgauge.runner import DEFAULT_MAX_STEPS, run_case
-from leakgauge.scoring import ModelReport, RankReorder, RateCI, _rank_reorder, compute_report
+from leakgauge.scoring import (
+    ModelReport,
+    RankReorder,
+    RateCI,
+    _rank_reorder,
+    compute_report,
+    crossings,
+)
 from leakgauge.types import Case, ModelAdapter, Response, RunRecord
 
 SCHEMA_VERSION = 1
@@ -443,3 +450,103 @@ def format_reorder_table(summaries: list[dict[str, Any]], reorder: RankReorder |
 
 def load_summaries(paths: Iterable[Path]) -> list[dict[str, Any]]:
     return [load_summary(p) for p in paths]
+
+
+# --- machine-readable roster summary ----------------------------------------
+
+ROSTER_SCHEMA_VERSION = 1
+
+
+def roster_summary(summaries: list[dict[str, Any]], reorder: RankReorder | None) -> dict[str, Any]:
+    """One structured artifact tying the whole roster together.
+
+    Per model: the three rates with their bootstrap CIs, the hijack-leakage gap,
+    and the rank under each ordering. Roster level: Kendall tau and how many
+    models change rank between the two orderings.
+
+    Every value is read off the loaded summaries — no row is synthesised. A
+    metric a run did not produce (``utility_under_attack`` is ``None`` unless the
+    runner supplied a utility check) stays ``None`` rather than becoming ``0.0``,
+    so "not measured" and "measured as zero" never collapse into each other.
+    Ranks and ``kendall_tau`` are ``None`` for a single-model roster, since a
+    reorder is undefined below two models.
+    """
+    models: list[dict[str, Any]] = []
+    for summary in summaries:
+        agg = summary["aggregate"]
+        model = summary["model"]
+        hijack = agg["hijack_asr"]
+        leakage = agg["leakage_asr"]
+        utility = agg.get("utility_under_attack")
+        models.append(
+            {
+                "model": model,
+                "n_cases": summary.get("n_cases"),
+                "hijack_asr": hijack,
+                "leakage_asr": leakage,
+                "utility_under_attack": utility,
+                # The thesis quantity: how much counting hijacks overstates
+                # verified exfiltration for this model. Rounded because it is
+                # the one value computed here rather than loaded, and float
+                # subtraction noise (0.0045045045045045 vs ...4505) would show
+                # up as a spurious diff between otherwise identical runs.
+                "gap": round(hijack["point"] - leakage["point"], 6),
+                "hijack_rank": reorder.hijack_ranks[model] if reorder else None,
+                "leakage_rank": reorder.leakage_ranks[model] if reorder else None,
+            }
+        )
+    # Worst-first under the headline metric, matching the reorder table.
+    models.sort(key=lambda m: (m["hijack_rank"] is None, m["hijack_rank"], m["model"]))
+
+    return {
+        "schema_version": ROSTER_SCHEMA_VERSION,
+        "n_models": len(models),
+        "kendall_tau": reorder.kendall_tau if reorder else None,
+        "rank_crossings": crossings(reorder) if reorder else None,
+        "models": models,
+    }
+
+
+def _md_rate(rate: dict[str, float] | None) -> str:
+    """A rate as ``point [lo, hi]``, or an explicit blank when not measured."""
+    if rate is None:
+        return "—"
+    return f"{rate['point']:.3f} [{rate['lo']:.3f}, {rate['hi']:.3f}]"
+
+
+def _md_rank(rank: int | None) -> str:
+    return "—" if rank is None else str(rank)
+
+
+def format_roster_markdown(roster: dict[str, Any]) -> str:
+    """Render :func:`roster_summary` as a committable markdown table."""
+    lines = [
+        "| model | n cases | hijack-ASR [95% CI] | leakage-verified ASR [95% CI] "
+        "| utility-under-attack [95% CI] | gap | h-rank | l-rank |",
+        "| --- | ---: | --- | --- | --- | ---: | ---: | ---: |",
+    ]
+    for m in roster["models"]:
+        n_cases = "—" if m["n_cases"] is None else str(m["n_cases"])
+        lines.append(
+            f"| {m['model']} | {n_cases} | {_md_rate(m['hijack_asr'])} "
+            f"| {_md_rate(m['leakage_asr'])} | {_md_rate(m['utility_under_attack'])} "
+            f"| {m['gap']:+.3f} | {_md_rank(m['hijack_rank'])} "
+            f"| {_md_rank(m['leakage_rank'])} |"
+        )
+    lines.append("")
+    if roster["kendall_tau"] is None:
+        lines.append("Kendall τ: — (needs ≥2 model summaries)")
+    else:
+        moved = roster["rank_crossings"]
+        lines.append(
+            f"Kendall τ (hijack-rate vs leakage-rate): {roster['kendall_tau']:.3f} — "
+            f"{moved} of {roster['n_models']} model(s) change rank when scored on "
+            "verified leakage."
+        )
+    lines.append("")
+    lines.append(
+        "`gap` = hijack-ASR − leakage-verified ASR: how much counting hijacks "
+        "overstates verified exfiltration. `—` means the metric was not measured "
+        "in that run, not that it was zero."
+    )
+    return "\n".join(lines)

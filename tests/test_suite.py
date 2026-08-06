@@ -12,11 +12,15 @@ from leakgauge.adapters.stub import StubAdapter
 from leakgauge.cases import DELAYED_CASE, build_environment
 from leakgauge.cli import _adapter_factory, main
 from leakgauge.runner import run_case
+from leakgauge.scoring import crossings
 from leakgauge.suite import (
     SCHEMA_VERSION,
     cases_for_suite,
+    format_roster_markdown,
+    load_summaries,
     load_summary,
     rank_reorder,
+    roster_summary,
     run_and_summarise,
     stub_script_for,
     write_summary,
@@ -108,13 +112,18 @@ def test_load_summary_rejects_non_summary(tmp_path: Path) -> None:
         load_summary(bad)
 
 
-def _fake_summary(model: str, hijack: float, leakage: float) -> dict[str, Any]:
+def _fake_summary(
+    model: str, hijack: float, leakage: float, utility: float | None = None
+) -> dict[str, Any]:
     ci = lambda p: {"point": p, "lo": p, "hi": p}  # noqa: E731
+    aggregate: dict[str, Any] = {"hijack_asr": ci(hijack), "leakage_asr": ci(leakage)}
+    if utility is not None:
+        aggregate["utility_under_attack"] = ci(utility)
     return {
         "schema_version": SCHEMA_VERSION,
         "model": model,
         "n_cases": 5,
-        "aggregate": {"hijack_asr": ci(hijack), "leakage_asr": ci(leakage)},
+        "aggregate": aggregate,
     }
 
 
@@ -134,6 +143,126 @@ def test_rank_reorder_detects_reordering() -> None:
 
 def test_rank_reorder_needs_two_models() -> None:
     assert rank_reorder([_fake_summary("solo", 0.5, 0.5)]) is None
+
+
+# --- machine-readable roster summary ----------------------------------------
+
+
+def test_roster_summary_matches_the_computed_report() -> None:
+    # A hijacks most but leaks least, so the two orderings disagree for every
+    # model and the gap column has a different sign per row.
+    summaries = [
+        _fake_summary("model-a", hijack=0.9, leakage=0.2, utility=0.7),
+        _fake_summary("model-b", hijack=0.5, leakage=0.8, utility=0.6),
+        _fake_summary("model-c", hijack=0.1, leakage=0.1, utility=0.9),
+    ]
+    reorder = rank_reorder(summaries)
+    assert reorder is not None
+    roster = roster_summary(summaries, reorder)
+
+    assert roster["n_models"] == 3
+    assert roster["kendall_tau"] == reorder.kendall_tau
+    assert roster["rank_crossings"] == crossings(reorder) == 2  # a and b swap; c stays
+    # Rows are ordered worst-first by hijack, matching the reorder table.
+    assert [m["model"] for m in roster["models"]] == reorder.models_by_hijack
+
+    by_model = {m["model"]: m for m in roster["models"]}
+    for summary in summaries:
+        model = summary["model"]
+        row = by_model[model]
+        agg = summary["aggregate"]
+        # Rates are the loaded values, CI and all -- nothing recomputed.
+        assert row["hijack_asr"] == agg["hijack_asr"]
+        assert row["leakage_asr"] == agg["leakage_asr"]
+        assert row["utility_under_attack"] == agg["utility_under_attack"]
+        assert row["n_cases"] == summary["n_cases"]
+        assert row["gap"] == pytest.approx(agg["hijack_asr"]["point"] - agg["leakage_asr"]["point"])
+        assert row["hijack_rank"] == reorder.hijack_ranks[model]
+        assert row["leakage_rank"] == reorder.leakage_ranks[model]
+
+    assert by_model["model-a"]["gap"] == pytest.approx(0.7)  # hijack overstates
+    assert by_model["model-b"]["gap"] == pytest.approx(-0.3)  # leaks more than it hijacks
+
+
+def test_roster_markdown_matches_the_roster_summary() -> None:
+    summaries = [
+        _fake_summary("model-a", hijack=0.9, leakage=0.2, utility=0.7),
+        _fake_summary("model-b", hijack=0.5, leakage=0.8, utility=0.6),
+    ]
+    roster = roster_summary(summaries, rank_reorder(summaries))
+    table = format_roster_markdown(roster)
+
+    lines = table.splitlines()
+    assert lines[0].startswith("| model |")
+    # One header, one separator, one row per model -- no invented rows.
+    body = [ln for ln in lines if ln.startswith("| model-")]
+    assert len(body) == len(summaries)
+
+    row_a = next(ln for ln in body if ln.startswith("| model-a "))
+    assert "0.900 [0.900, 0.900]" in row_a  # point + CI, not just the point
+    assert "0.200 [0.200, 0.200]" in row_a
+    assert "+0.700" in row_a  # gap, signed
+    assert f"{roster['kendall_tau']:.3f}" in table
+    assert "2 of 2 model(s) change rank" in table
+
+
+def test_roster_summary_leaves_an_unmeasured_metric_blank_not_zero() -> None:
+    # _fake_summary omits utility_under_attack unless asked, mirroring a run
+    # whose runner supplied no utility check.
+    summaries = [
+        _fake_summary("model-a", hijack=0.9, leakage=0.2),
+        _fake_summary("model-b", hijack=0.5, leakage=0.8),
+    ]
+    roster = roster_summary(summaries, rank_reorder(summaries))
+
+    assert all(m["utility_under_attack"] is None for m in roster["models"])
+    # Survives a JSON round trip as null, so a consumer cannot read it as 0.
+    reloaded = json.loads(json.dumps(roster))
+    assert reloaded["models"][0]["utility_under_attack"] is None
+
+    table = format_roster_markdown(roster)
+    assert "| — |" in table
+    assert "0.000" not in table  # never rendered as a measured zero
+
+
+def test_roster_summary_single_model_has_no_ranks() -> None:
+    roster = roster_summary(
+        [_fake_summary("solo", 0.5, 0.5)], rank_reorder([_fake_summary("solo", 0.5, 0.5)])
+    )
+
+    assert roster["n_models"] == 1
+    assert roster["kendall_tau"] is None
+    assert roster["rank_crossings"] is None
+    assert roster["models"][0]["hijack_rank"] is None
+    assert "needs ≥2 model summaries" in format_roster_markdown(roster)
+
+
+def test_report_writes_the_roster_summary_artifacts(tmp_path: Path) -> None:
+    paths = []
+    for model, hijack, leakage in (("stub:a", 0.9, 0.2), ("stub:b", 0.5, 0.8)):
+        path = tmp_path / f"{model.replace(':', '_')}.json"
+        path.write_text(json.dumps(_fake_summary(model, hijack, leakage)) + "\n", encoding="utf-8")
+        paths.append(str(path))
+
+    json_out = tmp_path / "nested" / "roster.json"  # parent is created on demand
+    md_out = tmp_path / "roster.md"
+    assert (
+        main(["report", *paths, "--summary-json", str(json_out), "--summary-md", str(md_out)]) == 0
+    )
+
+    written = json.loads(json_out.read_text(encoding="utf-8"))
+    expected = roster_summary(
+        load_summaries(Path(p) for p in paths), rank_reorder(load_summaries(Path(p) for p in paths))
+    )
+    assert written == expected
+    assert md_out.read_text(encoding="utf-8") == format_roster_markdown(expected) + "\n"
+
+
+def test_report_without_summary_flags_writes_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps(_fake_summary("stub:a", 0.9, 0.2)) + "\n", encoding="utf-8")
+    assert main(["report", str(path)]) == 0
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_cli_run_writes_results_and_report_reads_them(tmp_path: Path) -> None:
